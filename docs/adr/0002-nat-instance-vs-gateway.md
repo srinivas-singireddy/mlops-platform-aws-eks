@@ -1,5 +1,36 @@
 # ADR 0002: NAT Instance over NAT Gateway
 
+## Status update — 2026-04-25
+
+**Decision revised:** switched from NAT instance to NAT Gateway.
+
+### Why
+
+First workload requiring egress (EKS managed node group bootstrap) failed
+to join the cluster. Root cause: NAT instance user-data did not reliably
+configure iptables MASQUERADE on first boot — possibly due to AL2023
+repo refresh timing affecting `dnf install -y iptables-services`. Result:
+~30 minutes of failed node-group provisioning and a useless control plane
+billing while debugging.
+
+### Lesson
+
+The €29/month savings from NAT instance vs NAT Gateway evaporates the
+first time the instance fails — recovery time from a single incident
+exceeds the entire month's savings. For a project running ~6h/day, NAT
+Gateway costs ~€8/month, not €32.
+
+### Architectural takeaway
+
+Cost optimizations that increase the failure surface are not
+optimizations. Production-grade infrastructure favors managed services
+where the cost-vs-reliability trade-off is favorable. Document the
+optimization attempt; don't pretend it never happened.
+
+### Original ADR retained below
+
+[Original content unchanged — kept as a record of initial reasoning.]
+
 ## Status
 
 Accepted — 2026-04-20

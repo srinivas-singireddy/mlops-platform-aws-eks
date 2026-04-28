@@ -54,84 +54,25 @@ resource "aws_subnet" "private" {
 }
 
 # -----------------------------------------------------------------------------
-# NAT instance (cost-optimized alternative to NAT Gateway)
+# NAT Gateway (replaced NAT instance — see ADR 0002 status update)
 # -----------------------------------------------------------------------------
 
-# Amazon Linux 2023 AMI (ARM64 for t4g)
-data "aws_ami" "al2023_arm" {
-  most_recent = true
-  owners      = ["amazon"]
 
-  filter {
-    name   = "name"
-    values = ["al2023-ami-*-arm64"]
-  }
-}
-
-resource "aws_security_group" "nat" {
-  name        = "${var.name}-nat-sg"
-  description = "Allow outbound internet from private subnets via this instance"
-  vpc_id      = aws_vpc.this.id
-
-  ingress {
-    description = "All traffic from VPC"
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = [var.vpc_cidr]
-  }
-
-  egress {
-    description = "All outbound"
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  tags = { Name = "${var.name}-nat-sg" }
-}
 
 resource "aws_eip" "nat" {
   domain = "vpc"
   tags   = { Name = "${var.name}-nat-eip" }
 }
 
-resource "aws_network_interface" "nat" {
-  subnet_id         = aws_subnet.public[0].id
-  security_groups   = [aws_security_group.nat.id]
-  source_dest_check = false # CRITICAL for NAT forwarding.
-  tags              = { Name = "${var.name}-nat-eni" }
+resource "aws_nat_gateway" "this" {
+  allocation_id = aws_eip.nat.id
+  subnet_id     = aws_subnet.public[0].id
+
+  tags = { Name = "${var.name}-nat-gw" }
+
+  depends_on = [aws_internet_gateway.this]
 }
 
-resource "aws_eip_association" "nat" {
-  allocation_id        = aws_eip.nat.id
-  network_interface_id = aws_network_interface.nat.id
-}
-
-resource "aws_instance" "nat" {
-  ami           = data.aws_ami.al2023_arm.id
-  instance_type = var.nat_instance_type
-
-  network_interface {
-    network_interface_id = aws_network_interface.nat.id
-    device_index         = 0
-  }
-
-  # Enable IP forwarding + iptables masquerading on boot
-  user_data = <<-EOF
-    #!/bin/bash
-    echo 1 > /proc/sys/net/ipv4/ip_forward
-    echo "net.ipv4.ip_forward = 1" >> /etc/sysctl.conf
-    /sbin/iptables -t nat -A POSTROUTING -o ens5 -j MASQUERADE
-    # Persist iptables across reboots
-    dnf install -y iptables-services
-    /sbin/iptables-save > /etc/sysconfig/iptables
-    systemctl enable --now iptables
-  EOF
-
-  tags = { Name = "${var.name}-nat" }
-}
 
 
 # -----------------------------------------------------------------------------
@@ -157,13 +98,13 @@ resource "aws_route_table_association" "public" {
   route_table_id = aws_route_table.public.id
 }
 
-# Private: default route to NAT instance ENI
+# Private: default route to NAT Gateway ENI
 resource "aws_route_table" "private" {
   vpc_id = aws_vpc.this.id
 
   route {
-    cidr_block           = "0.0.0.0/0"
-    network_interface_id = aws_network_interface.nat.id
+    cidr_block     = "0.0.0.0/0"
+    nat_gateway_id = aws_nat_gateway.this.id # was: network_interface_id = aws_network_interface.nat.id
   }
 
   tags = { Name = "${var.name}-private-rt" }

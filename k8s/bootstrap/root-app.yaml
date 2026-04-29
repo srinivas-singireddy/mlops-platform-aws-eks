@@ -1,0 +1,33 @@
+# This is the "root" ArgoCD Application that points at the deploy repo.
+# Apply once with: kubectl apply -f k8s/bootstrap/root-app.yaml
+# Thereafter, all changes flow through Git on the deploy repo side.
+
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: root
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+
+  source:
+    # Points at the deploy repo
+    repoURL: https://github.com/srinivas-singireddy/mlops-platform-deploy.git
+    targetRevision: main
+    path: apps
+    directory:
+      recurse: true
+      include: '*/application.yaml'
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+
+  syncPolicy:
+    automated:
+      prune: true       # Delete resources no longer in Git
+      selfHeal: true    # Revert manual cluster changes back to Git's version
+    syncOptions:
+      - CreateNamespace=true

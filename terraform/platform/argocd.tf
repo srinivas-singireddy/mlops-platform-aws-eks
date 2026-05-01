@@ -73,3 +73,56 @@ resource "helm_release" "argocd" {
   timeout    = 600
   depends_on = [helm_release.cert_manager, helm_release.alb_controller]
 }
+
+# -----------------------------------------------------------------------------
+# Bootstrap Application — points ArgoCD at the deploy repo
+# 
+# This is the bridge between infrastructure (this repo) and applications
+# (mlops-platform-deploy). Without this, ArgoCD has no idea which repo
+# to watch. Applied via Terraform so a fresh cluster bootstrap is fully
+# automated — no manual kubectl apply needed.
+# -----------------------------------------------------------------------------
+
+resource "kubectl_manifest" "argocd_root_app" {
+  yaml_body = yamlencode({
+    apiVersion = "argoproj.io/v1alpha1"
+    kind       = "Application"
+    metadata = {
+      name      = "root"
+      namespace = "argocd"
+      finalizers = [
+        "resources-finalizer.argocd.argoproj.io"
+      ]
+    }
+    spec = {
+      project = "default"
+
+      source = {
+        repoURL        = var.deploy_repo_url
+        targetRevision = var.deploy_repo_branch
+        path           = "apps"
+        directory = {
+          recurse = true
+          include = "*/application.yaml"
+        }
+      }
+
+      destination = {
+        server    = "https://kubernetes.default.svc"
+        namespace = "argocd"
+      }
+
+      syncPolicy = {
+        automated = {
+          prune    = true
+          selfHeal = true
+        }
+        syncOptions = [
+          "CreateNamespace=true"
+        ]
+      }
+    }
+  })
+
+  depends_on = [helm_release.argocd]
+}

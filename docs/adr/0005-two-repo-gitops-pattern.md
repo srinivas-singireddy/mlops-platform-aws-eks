@@ -47,3 +47,23 @@ A single bootstrap Application lives in mlops-platform-aws-eks
    creates noisy Git history
 2. **Three+ repos** (per-app deploy repos): rejected, overkill for a
    single-engineer project
+
+
+## Implementation note — bootstrap automation
+
+The two-repo pattern requires a single bridge: an ArgoCD Application
+in the cluster that points at the deploy repo. Without it, ArgoCD
+has no idea what to deploy, even if all the YAML in the deploy repo
+is correct.
+
+The bridge resource (k8s/bootstrap/root-app.yaml) lives in this
+repo but must be applied to the cluster as part of platform bootstrap.
+We apply it via Terraform's kubectl_manifest resource in the platform
+module, so a clean `terraform apply` produces a fully-functional
+GitOps cluster — no manual `kubectl apply` step required.
+
+Architectural lesson: in GitOps, "bootstrap" is the chicken-and-egg
+moment where Git-managed manifests don't yet exist in the cluster.
+Whoever owns infrastructure (Terraform, in our case) must own the
+bootstrap manifest, because no other tool can apply it before
+itself exists.

@@ -34,3 +34,9 @@ _Instructions forthcoming as each phase completes._
 Srinivas Singireddy — Solutions Architect, Munich
 - LinkedIn: [linkedin.com/in/srinivas-singireddy](...)
 - GitHub: [srinivas-singireddy](...)
+
+## Documentation
+
+- [Architecture overview](docs/architecture.md) — high-level system design with diagrams
+- [Lessons learned](docs/lessons-learned.md) — 18 issues, decisions, and architectural takeaways from the build
+- [Architecture Decision Records](docs/adr/) — the reasoning behind specific choices

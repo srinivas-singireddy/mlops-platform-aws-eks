@@ -84,16 +84,16 @@ flowchart LR
     igw["🌐 Internet Gateway"]
 
     subgraph VPC["VPC 10.0.0.0/16 (Frankfurt — eu-central-1)"]
-        subgraph PublicAZ1["🌍 Public Subnet AZ-1<br/>10.0.0.0/24"]
+        subgraph PublicAZ1["🌍 Public Subnet AZ-1 — 10.0.0.0/24"]
             nat["NAT Gateway"]
         end
-        subgraph PublicAZ2["🌍 Public Subnet AZ-2<br/>10.0.1.0/24"]
+        subgraph PublicAZ2["🌍 Public Subnet AZ-2 — 10.0.1.0/24"]
             spare["(reserved for ALBs)"]
         end
-        subgraph PrivateAZ1["🔒 Private Subnet AZ-1<br/>10.0.10.0/24"]
+        subgraph PrivateAZ1["🔒 Private Subnet AZ-1 — 10.0.10.0/24"]
             node1["Worker Node 1"]
         end
-        subgraph PrivateAZ2["🔒 Private Subnet AZ-2<br/>10.0.11.0/24"]
+        subgraph PrivateAZ2["🔒 Private Subnet AZ-2 — 10.0.11.0/24"]
             node2["Worker Node 2"]
         end
     end

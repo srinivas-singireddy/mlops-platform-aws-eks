@@ -67,9 +67,9 @@ flowchart TB
     argocd -.->|deploys| Apps
     eso -.->|fetches| sm
 
-    classDef infra fill:#FFE5B4,stroke:#FF8C00,stroke-width:2px
-    classDef gitops fill:#B4E5FF,stroke:#0080C0,stroke-width:2px
-    classDef aws fill:#FFF5C4,stroke:#FF9900,stroke-width:1px
+    classDef infra fill:#FFE5B4,stroke:#FF8C00,stroke-width:2px,color:#1A1A1A
+    classDef gitops fill:#B4E5FF,stroke:#0080C0,stroke-width:2px,color:#1A1A1A
+    classDef aws fill:#FFF5C4,stroke:#FF9900,stroke-width:1px,color:#1A1A1A
 
     class Repo1,tf infra
     class Repo2,manifests gitops
@@ -103,8 +103,8 @@ flowchart LR
     node1 -->|outbound only| nat
     node2 -->|outbound only| nat
 
-    classDef public fill:#FFE5B4,stroke:#FF8C00
-    classDef private fill:#D5F5E3,stroke:#27AE60
+    classDef public fill:#FFE5B4,stroke:#FF8C00,color:#1A1A1A
+    classDef private fill:#D5F5E3,stroke:#27AE60,color:#1A1A1A
     class PublicAZ1,PublicAZ2 public
     class PrivateAZ1,PrivateAZ2 private
 ```
@@ -132,7 +132,7 @@ flowchart TB
     network -->|VPC ID, subnets| cluster
     cluster -->|kubeconfig, OIDC| platform
 
-    classDef infra fill:#FFE5B4,stroke:#FF8C00
+    classDef infra fill:#FFE5B4,stroke:#FF8C00,color:#1A1A1A
     class bootstrap,network,cluster,platform infra
 ```
 
@@ -185,9 +185,9 @@ flowchart TB
         alloy["Grafana Alloy (DS)"]
     end
 
-    classDef system fill:#E8E8E8,stroke:#666
-    classDef platform fill:#FFE5B4,stroke:#FF8C00
-    classDef apps fill:#B4E5FF,stroke:#0080C0
+    classDef system fill:#E8E8E8,stroke:#666,color:#1A1A1A
+    classDef platform fill:#FFE5B4,stroke:#FF8C00,color:#1A1A1A
+    classDef apps fill:#B4E5FF,stroke:#0080C0,color:#1A1A1A
 
     class KubeSystem,KubeSysAlb system
     class CertNs,ArgoNs,EsoNs platform
@@ -251,8 +251,8 @@ flowchart LR
     eso -->|writes| ks
     ks -->|admin-user<br/>admin-password| graf
 
-    classDef aws fill:#FFF5C4,stroke:#FF9900
-    classDef k8s fill:#B4E5FF,stroke:#0080C0
+    classDef aws fill:#FFF5C4,stroke:#FF9900,color:#1A1A1A
+    classDef k8s fill:#B4E5FF,stroke:#0080C0,color:#1A1A1A
     class secret aws
     class eso,es,ks,graf k8s
 ```
@@ -306,10 +306,10 @@ flowchart LR
     loki --> graf
     prom -->|fires alerts| am
 
-    classDef src fill:#E8E8E8,stroke:#666
-    classDef collect fill:#FFE5B4,stroke:#FF8C00
-    classDef store fill:#D5F5E3,stroke:#27AE60
-    classDef viz fill:#B4E5FF,stroke:#0080C0
+    classDef src fill:#E8E8E8,stroke:#666,color:#1A1A1A
+    classDef collect fill:#FFE5B4,stroke:#FF8C00,color:#1A1A1A
+    classDef store fill:#D5F5E3,stroke:#27AE60,color:#1A1A1A
+    classDef viz fill:#B4E5FF,stroke:#0080C0,color:#1A1A1A
     class nodes,kubeapi,ksm,pods src
     class prom,alloy collect
     class promstor,loki store

@@ -15,8 +15,16 @@ variable "cluster_name" {
 
 variable "kubernetes_version" {
   type        = string
-  default     = "1.31" # Latest stable EKS version as of early 2026
-  description = "Kubernetes minor version for control plane and managed addons"
+  default     = "1.34"
+  description = <<-EOT
+    Kubernetes minor version for EKS control plane and managed addons.
+    Standard support window (no extended support surcharge) as of May 2026:
+      Standard : 1.33, 1.34, 1.35, 1.36
+      Extended  : 1.30, 1.31, 1.32  ← 6x hourly cost, avoid these
+    On ephemeral clusters (destroy/apply workflow) jump directly to any
+    supported version — no sequential upgrade needed.
+    Ref: https://docs.aws.amazon.com/eks/latest/userguide/kubernetes-versions.html
+  EOT
 }
 
 variable "node_instance_types" {

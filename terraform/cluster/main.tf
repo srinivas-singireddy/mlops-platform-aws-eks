@@ -99,7 +99,22 @@ module "eks" {
       min_size     = var.node_group_min_size
       max_size     = var.node_group_max_size
       desired_size = var.node_group_desired_size
-
+      # AL2023 nodeadm-based bootstrap configuration
+      # Override kubelet's max-pods to support VPC CNI prefix delegation density
+      cloudinit_pre_nodeadm = [
+        {
+          content_type = "application/node.eks.aws"
+          content      = <<-EOT
+            ---
+            apiVersion: node.eks.aws/v1alpha1
+            kind: NodeConfig
+            spec:
+              kubelet:
+                config:
+                  maxPods: 110
+          EOT
+        }
+      ]
       # Amazon Linux 2023 AMI
       ami_type = "AL2023_x86_64_STANDARD"
 

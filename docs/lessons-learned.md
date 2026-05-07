@@ -602,6 +602,203 @@ Used (A) for ad-hoc verification and (B) for repeatable in-cluster checks. The m
 > "I tried to verify Loki health with `kubectl exec` and a wget command. The command failed because Loki's container is minimal — no wget, no curl, just the binary. This is correct behavior for production-grade images. The right pattern is port-forward + curl from your laptop, or spin up a one-off curl pod with `kubectl run`. Architectural principle: minimal containers are the goal; debugging is a separate concern with separate tooling."
 
 ---
+## Issue 19 — VPC CNI prefix delegation requires TWO independent settings
+
+**Phase:** Phase 4 — observability stack scaling
+
+### Problem
+
+After deploying the full observability stack, the cluster filled to 100% pod capacity. Enabled VPC CNI prefix delegation via Terraform (`ENABLE_PREFIX_DELEGATION=true` on the managed addon) and rolled the nodes. ENIs showed `/28` prefixes correctly assigned, but `kubectl get nodes -o jsonpath='...allocatable.pods...'` still reported 17 pods per node — same as before. Pods continued to fail scheduling with "Too many pods" errors.
+
+### Why it happened
+
+EKS pod density isn't a single setting — it's the intersection of two completely independent configurations:
+
+1. **VPC CNI env vars** (DaemonSet level) tell the network plugin to allocate `/28` prefixes per ENI instead of individual IPs. Confirmed working when ENIs show `Ipv4Prefixes` array populated.
+2. **kubelet's `--max-pods` flag** is set at node bootstrap and never recalculated during the node's lifetime. The EKS bootstrap script defaults this to the instance type's IP-allocation default (17 for t3.medium), regardless of whether VPC CNI is configured for prefix delegation.
+
+So even with VPC CNI happily allocating prefixes, kubelet was still capping at 17 pods because that's what it was told at boot. To make matters worse, attempting the obvious fix (`bootstrap_extra_args = "--use-max-pods false --kubelet-extra-args '--max-pods=110'"`) silently produced no change in `terraform plan` — because the cluster was running **AL2023** AMIs, which use `nodeadm` for bootstrap, not the legacy `bootstrap.sh` script. The `bootstrap_extra_args` field is only honored by AL2-era bootstrap scripts. On AL2023, it's accepted by the Terraform module but produces zero effect.
+
+### Options considered
+
+- **A — Pin nodes to AL2 AMI for compatibility with `bootstrap_extra_args`.** Reverts to legacy AMI; misses AL2023 security/performance improvements.
+- **B — Use `cloudinit_pre_nodeadm` in the EKS module to inject a NodeConfig YAML.** AL2023-correct mechanism. Sets `kubelet.config.maxPods` and the `--max-pods` flag via `nodeadm`'s native config format.
+- **C — Switch to Karpenter.** Karpenter computes `max-pods` per node automatically and configures CNI mode transparently. Bigger refactor, deferred to Phase 5.
+
+### What I chose
+
+**B — `cloudinit_pre_nodeadm`** in `terraform/cluster/main.tf`:
+
+```hcl
+eks_managed_node_groups = {
+  default = {
+    # ... other config ...
+    cloudinit_pre_nodeadm = [
+      {
+        content_type = "application/node.eks.aws"
+        content      = <<-EOT
+          ---
+          apiVersion: node.eks.aws/v1alpha1
+          kind: NodeConfig
+          spec:
+            kubelet:
+              config:
+                maxPods: 110
+              flags:
+                - --max-pods=110
+        EOT
+      }
+    ]
+  }
+}
+```
+
+Combined with the VPC CNI env vars on the addon, this gives nodes 110 pods/node density at zero additional cost. `terraform apply` triggered a launch template version bump and node group rolling update. After the new nodes joined, `kubectl get nodes` confirmed `pods: 110`.
+
+### Architectural takeaway
+
+**EKS pod density is a multi-layer setting that requires alignment across configurations that look independent.** The CNI plugin, the kubelet, and the AMI's bootstrap mechanism each contribute to the final value. Setting only one of them produces silent partial failures.
+
+The deeper lesson: **silent acceptance of configuration that doesn't take effect is the worst kind of bug.** `terraform apply` succeeded with `bootstrap_extra_args`. Nothing errored. But nothing changed either. Always verify config changes by checking the actual running state (`kubectl get nodes -o ...allocatable.pods...`), never by trusting the tool's "no errors" signal alone.
+
+This is also one of the strongest arguments for Karpenter over managed node groups: Karpenter handles all three pieces (CNI mode, max-pods, AMI bootstrap) transparently per node. Manually configured node groups require explicit per-AMI alignment that's easy to get wrong.
+
+### Interview talking point
+
+> "I hit the EKS pod density wall on a t3.medium cluster. Enabling VPC CNI prefix delegation alone didn't fix it — kubelet was still reporting 17 pods because `--max-pods` is set at boot via the EKS bootstrap mechanism, independent of CNI configuration. The first attempt — `bootstrap_extra_args` — silently did nothing because the cluster runs AL2023, where bootstrap is `nodeadm`-based, not the legacy script. The fix was `cloudinit_pre_nodeadm` injecting a NodeConfig YAML for kubelet. Architectural lesson: pod density is a three-layer setting (CNI plugin, kubelet, AMI bootstrap), and they're independent. This is one of the strongest arguments for Karpenter — it handles all three transparently per node."
+
+---
+
+## Issue 20 — Killed both worker nodes simultaneously, lost addon reconciliation
+
+**Phase:** Phase 4 — recovering from the prefix delegation rollout
+
+### Problem
+
+To force kubelet recalculation of `allocatable.pods` after enabling prefix delegation, terminated both worker EC2 instances simultaneously. New replacement instances joined but stayed `NotReady` for 15+ minutes. `kubectl get pods -n kube-system -l k8s-app=aws-node` showed zero pods. Same for kube-proxy. Network plugin DaemonSets simply weren't getting their pods scheduled.
+
+### Why it happened
+
+When both nodes terminate simultaneously, the cluster has no functioning data plane for several minutes. The EKS managed addon controllers (which install `aws-node` and `kube-proxy` DaemonSets) lose their reconciliation foothold during this window — they can't query the cluster API for state, can't redeploy DaemonSets, and don't auto-recover when nodes return.
+
+Specifically:
+- DaemonSet objects survived (in etcd, managed by EKS control plane)
+- But their pods on the old nodes were gone (nodes terminated)
+- Replacement nodes joined fresh, no addon pods on them
+- Addon controllers should have recreated the DaemonSet pods on new nodes — but didn't, because reconciliation got stuck
+
+### Options considered
+
+- **A — Wait longer for addon reconciliation to recover.** Could take indefinitely if the controller is wedged.
+- **B — Force EKS addon reconciliation via API.** `aws eks update-addon --resolve-conflicts OVERWRITE` triggers a re-deployment from scratch.
+- **C — Delete and recreate the addon entirely.** Heavier hammer; works but not necessary if (B) succeeds.
+
+### What I chose
+
+**B — forced reconciliation:**
+
+```bash
+aws eks update-addon \
+  --cluster-name mlops-lab \
+  --addon-name vpc-cni \
+  --resolve-conflicts OVERWRITE \
+  --profile mlops-platform --region eu-central-1
+
+aws eks update-addon \
+  --cluster-name mlops-lab \
+  --addon-name kube-proxy \
+  --resolve-conflicts OVERWRITE \
+  --profile mlops-platform --region eu-central-1
+```
+
+Within ~60 seconds, DaemonSets redeployed onto the new nodes. Nodes transitioned to Ready. Cluster recovered.
+
+### Architectural takeaway
+
+**Even managed services can get into bad reconciliation states under unusual sequences.** "All worker nodes gone simultaneously" is exactly that kind of edge case. The fix pattern: explicitly trigger reconciliation via the AWS API rather than waiting for auto-recovery.
+
+**Better practice for forcing node replacement on EKS:** roll one node at a time. Terminate one EC2 instance, wait for replacement to be Ready (`kubectl get nodes -w`), only then terminate the next. This keeps at least one node Ready throughout, preserving addon reconciliation continuity.
+
+The saved time of terminating both at once isn't worth the recovery time when something goes wrong. This is one of those infrastructure principles that's easy to internalize after a single incident — you never make this mistake again.
+
+### Interview talking point
+
+> "I terminated both EKS worker nodes at once to force a kubelet config recalculation. The replacements joined but stayed NotReady because the EKS managed addons couldn't redeploy their DaemonSets during the brief window where the data plane had zero nodes. The fix was forcing addon reconciliation via `aws eks update-addon --resolve-conflicts OVERWRITE`. The architectural lesson: always roll EKS nodes one at a time, never kill the entire data plane simultaneously, even with managed addons. The saved time isn't worth the recovery cost."
+
+---
+## Issue 21 — Admission webhook deadlock locked out kube-system
+
+**Phase:** Phase 4 — same recovery as Issue 20
+
+### Problem
+
+After forcing addon reconciliation in Issue 20, the new nodes were *still* NotReady. Investigation showed `aws-node` and `kube-proxy` DaemonSets had zero running pods. Pod creation events showed:
+
+```
+FailedCreate: failed calling webhook "mpod.elbv2.k8s.aws":
+no endpoints available for service "aws-load-balancer-webhook-service"
+```
+
+But the AWS LB Controller pod itself couldn't run because:
+
+```
+FailedScheduling: 0/2 nodes are available:
+2 node(s) had untolerated taint {node.kubernetes.io/not-ready}
+```
+
+A circular dependency.
+
+### Why it happened
+
+Classic Kubernetes admission webhook deadlock. The dependency chain:
+
+1. AWS LB Controller's `MutatingWebhookConfiguration` intercepts ALL pod creation cluster-wide (default scope, no namespace selector restricting it)
+2. New nodes start NotReady because their CNI plugin (aws-node) isn't running
+3. aws-node DaemonSet wants to create pods on new nodes, but the webhook intercepts the create call
+4. Webhook has no endpoints (LB Controller pod isn't running)
+5. aws-node creation fails
+6. Nodes stay NotReady
+7. LB Controller pod can't schedule (NotReady taint, no toleration)
+8. Webhook stays endpointless
+9. Goto 5 — deadlock
+
+### Options considered
+
+- **A — Wait for the system to self-recover.** Would never happen — circular dependency.
+- **B — Delete the MutatingWebhookConfiguration directly.** Breaks the cycle. Controller will recreate it when it starts.
+- **C — Manually edit the webhook to add a namespace-scope filter.** More surgical but requires more thought; deletion is simpler emergency response.
+
+### What I chose
+
+**B — emergency deletion:**
+
+```bash
+kubectl delete mutatingwebhookconfiguration aws-load-balancer-webhook
+```
+
+Within ~60 seconds, kube-system DaemonSets created their pods. Nodes went Ready. AWS LB Controller pod scheduled. The controller recreated the webhook on its own startup.
+
+### Architectural takeaway
+
+**Mutating admission webhooks that intercept ALL pod creation (cluster-wide scope) are operationally fragile.** Even AWS-managed components like aws-node depend on pods being creatable, which means they depend on the webhook being callable, which means they depend on the controller being running, which depends on the cluster having Ready nodes... circular dependency land.
+
+**Best practice:** scope every cluster-wide webhook to opted-in namespaces, never letting it intercept kube-system or other infrastructure namespaces. The AWS-recommended pattern for the LB Controller specifically:
+
+```yaml
+webhookNamespaceSelectors:
+  - key: elbv2.k8s.aws/pod-readiness-gate-inject
+    operator: In
+    values: ["enabled"]
+```
+
+This makes the webhook opt-in: it applies only to namespaces explicitly labeled to receive readiness gate injection. Default behavior: webhook applies to nothing.
+
+**The emergency lever** — `kubectl delete mutatingwebhookconfiguration <name>` — is worth memorizing. When a cluster is hopelessly deadlocked because a webhook is unreachable, this command is your last resort. The controller will recreate the webhook when it starts.
+
+### Interview talking point
+
+> "I hit a circular dependency where the AWS Load Balancer Controller's admission webhook was intercepting aws-node DaemonSet pod creation, but the controller itself couldn't run because nodes were NotReady waiting for aws-node. Classic webhook deadlock. The emergency lever was deleting the MutatingWebhookConfiguration directly — `kubectl delete mutatingwebhookconfiguration aws-load-balancer-webhook` — letting kube-system bootstrap, then the controller recreated the webhook on its own startup. The permanent fix is namespace-scoping the webhook so it never intercepts kube-system. The lesson: cluster-wide admission webhooks must be opt-in, never allowed to intercept system namespaces, or you risk this deadlock on any cluster recovery."
+---
 
 ## Cross-cutting themes
 

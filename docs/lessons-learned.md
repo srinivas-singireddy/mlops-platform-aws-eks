@@ -69,9 +69,6 @@ The Phase 1 design used a custom NAT instance (t4g.nano) rather than NAT Gateway
 
 **Cost optimizations that increase the failure surface are not optimizations.** A single 30-minute incident debugging the NAT instance wiped out the entire month of theoretical savings. Production-grade infrastructure favors managed services where the cost-vs-reliability trade-off is favorable. The original NAT-instance ADR was retained but updated with a "Status: revised" block documenting the postmortem — interviewers respond well to ADRs that show evolution of thinking, not just initial choices.
 
-### Interview talking point
-
-> "I initially deployed a NAT instance instead of NAT Gateway to save about 30 euros a month. The first non-trivial workload — EKS node group bootstrap — failed because the instance's iptables config didn't apply reliably on first boot. I spent 30 minutes debugging, then made the call to switch to NAT Gateway. The architectural lesson: cost optimizations that increase failure surface aren't actually optimizations. A single recovery incident wiped out the savings. I documented the original choice and the revision in the same ADR — that postmortem is itself the most valuable artifact from the experience."
 
 ---
 
@@ -99,9 +96,6 @@ Ran `update-kubeconfig`. Verified `kubectl get nodes` returned 2 Ready nodes. **
 
 In daily destroy/apply rhythms, kubeconfig refresh is a step that's easy to forget. Building it into the morning automation (a Taskfile target or shell alias) eliminates the friction. Also worth periodically running `kubectl config get-contexts` and deleting stale entries — accumulated kubeconfig debt is a common source of "I just deleted production" moments when engineers have multiple clusters.
 
-### Interview talking point
-
-> "On EKS, every fresh cluster gets a new API endpoint hostname with a unique cluster-ID hex. After destroy/apply, your local kubeconfig points at yesterday's cluster, which no longer exists. The fix is `aws eks update-kubeconfig`. I built it into my daily up/down automation so I don't have to remember it. I also use a `kctx` shell alias that prints the current context — prevents the all-too-common 'I just deleted production' moment when you have multiple clusters."
 
 ---
 
@@ -130,9 +124,6 @@ The official `hashicorp/kubernetes` provider's `kubernetes_manifest` resource va
 
 When mixing CRD installation and CRD usage in the same Terraform module, you have two providers with fundamentally different validation models — choose accordingly. The `gavinbunney/kubectl` community provider is the de facto standard for "apply this manifest at apply-time, don't validate at plan-time." Worth knowing about — it's a permanent fixture in production EKS Terraform code.
 
-### Interview talking point
-
-> "The official Kubernetes provider validates manifests at plan time against the cluster's schema. That breaks if you're installing a CRD and a custom resource of that CRD in the same Terraform module — at plan time the CRD doesn't exist yet, so plan fails. The standard fix in the community is the gavinbunney/kubectl provider, which uses `kubectl_manifest` and doesn't validate until apply time. I document this choice in an ADR so future engineers don't 'fix' my code back to the official provider and break it."
 
 ---
 
@@ -161,9 +152,6 @@ AWS LB Controller registers a `MutatingWebhookConfiguration` that intercepts eve
 
 Cluster-wide admission webhooks introduce ordering constraints between Helm releases that are otherwise independent. When mixing multiple platform components in a single apply, treat the webhook controllers as foundational dependencies — install them first, restrict their scope to the namespaces that actually need them, and explicitly sequence downstream installs.
 
-### Interview talking point
-
-> "The AWS Load Balancer Controller registers a cluster-wide MutatingWebhookConfiguration on Services. By default it applies to every namespace — including namespaces of platform components installed in the same Terraform apply. If the LB controller pods aren't Ready when cert-manager creates its internal Services, Helm install fails. Three guards together solve it: `wait = true` so Terraform doesn't consider the LB controller 'done' until pods are Ready, namespace selectors that scope the webhook to opted-in namespaces, and explicit `depends_on` from downstream releases. The architectural lesson: cluster-wide admission webhooks introduce ordering dependencies between otherwise-independent Helm releases."
 
 ---
 
@@ -192,9 +180,6 @@ I configured `webhookNamespaceSelectors[0].values[0] = "false"` via Helm `set` b
 
 For non-trivial Helm releases with a mix of strings, booleans, and lists, prefer `values = [yamlencode(...)]` over ad-hoc `set` blocks. Helm `set` introduces a YAML-encoding step where type drift is silent and easy to miss. The `yamlencode` approach preserves HCL types end-to-end. After hitting this once, I now use `set` only for the simplest single-string values, and `yamlencode` for everything else.
 
-### Interview talking point
-
-> "I configured a Helm chart's namespaceSelector with a `set` block that included a string `'false'`. Helm's `set` re-encodes through YAML, where unquoted `false` becomes a boolean. Kubernetes rejected the resulting MutatingWebhookConfiguration because the API expects a list of strings, not booleans. Two fixes: escape-quote the value, or switch the entire helm_release to `values = [yamlencode(...)]`. I picked yamlencode because it preserves HCL types end-to-end with no encoding ambiguity. Architectural lesson: prefer yamlencode over set blocks for any non-trivial Helm chart configuration."
 
 ---
 
@@ -223,9 +208,6 @@ Multi-line `set` blocks for resources with few fields, `yamlencode` block for co
 
 `terraform validate` is the single most-skipped step in the Terraform workflow. It runs in milliseconds and catches syntax errors, missing required attributes, and type mismatches before they reach the much heavier `plan` operation. The right cadence is: `terraform fmt` → `terraform validate` → `terraform plan` → `terraform apply`. Pre-commit hooks should enforce the first two automatically. Skipping validate is how silent type-drift bugs reach production.
 
-### Interview talking point
-
-> "I had been writing single-line set blocks with semicolons separating attributes — which works in some HCL dialects but is invalid in Terraform HCL2. The linter caught it; `terraform validate` would have too if I'd run it. The lesson: I always run `fmt`, `validate`, then `plan` now, in that exact order. Pre-commit hooks enforce `fmt` and `validate` automatically so the discipline isn't something I have to remember."
 
 ---
 
@@ -254,9 +236,6 @@ In a lab, destroy-and-recreate is always safe and tempting. In production, you c
 
 Destroying without first understanding state is a bad habit, even in a lab where it's safe. Production architects build muscle memory by always planning first — read what's drifted, decide whether to act, then act. "Destroying because uncertainty is uncomfortable" is exactly the reflex that's dangerous when you're later operating real production systems. The discipline of `terraform plan` before any decision is the same discipline whether you're in a lab or running a Fortune-500 deployment.
 
-### Interview talking point
-
-> "My instinct after a series of code changes was to destroy and rebuild for certainty. I caught myself and ran `terraform plan` first — it showed only minor cosmetic changes, no actual drift. Destroying would have cost me 30 minutes and taught me nothing. The architectural lesson: in production you can't destroy and rebuild at will, so you build the habit of trusting the plan diff in the lab too. 'Plan, decide, act' beats 'destroy when uncertain' every time."
 
 ---
 
@@ -286,9 +265,6 @@ The two-repo GitOps pattern needs a single bridge: an ArgoCD `Application` resou
 
 **In GitOps, "bootstrap" is the chicken-and-egg moment where Git-managed manifests don't yet exist in the cluster.** Whoever owns infrastructure (Terraform, in our case) must own the bootstrap manifest, because no other tool can apply it before itself exists. This is one of the most common GitOps pitfalls — fragile bootstrap that depends on engineer memory rather than infrastructure code. Treating the bridge as Terraform-owned makes the cluster self-bootstrapping.
 
-### Interview talking point
-
-> "In a two-repo GitOps pattern, you need exactly one bridge — an ArgoCD Application pointing at the deploy repo. When I first set this up, I applied the bridge manually with kubectl. After destroy/apply, it was gone, and the cluster came up with ArgoCD healthy but empty. I moved the bridge to Terraform via the kubectl provider's `kubectl_manifest`. The architectural lesson: in GitOps, bootstrap is the chicken-and-egg moment, and whoever owns infrastructure must own the bootstrap manifest."
 
 ---
 
@@ -317,9 +293,7 @@ The plan I was working from was written with patterns from late 2025. Grafana La
 
 Portfolio projects benefit from being current. Demonstrating Promtail in mid-2026 would signal "this person is following old tutorials." Demonstrating Alloy signals awareness of the ecosystem's evolution. The discipline: cross-check any tool's status with primary sources (project docs, GitHub) before adopting it. Two years of ecosystem lag is normal in tutorial content; you have to do the verification yourself.
 
-### Interview talking point
 
-> "I was about to deploy Promtail as my log shipper, then noticed in Grafana's docs that it had reached EOL on March 2, 2026 and all development had moved to Grafana Alloy. I made the switch before deploying. The lesson: any tutorial more than 12 months old needs verification against current project documentation. Tooling in the cloud-native space moves fast — Promtail, Calico, Flannel, Helm v2 are all examples of 'what tutorials still teach' diverging from 'what production teams actually run.'"
 
 ---
 
@@ -347,9 +321,6 @@ Verified both repos via `helm search repo`. Confirmed Alloy at the main Grafana 
 
 **Helm chart repo URLs are not stable across projects you'd think are related.** Always verify the current repo via artifacthub.io or the project's README before pinning. For reproducibility, prefer pinning a specific chart version rather than letting Helm resolve "latest" — a chart that moves repos can break a "latest" install silently.
 
-### Interview talking point
-
-> "When I was setting up the LGTM stack, Loki and Alloy ended up in different Helm repos despite both being from Grafana Labs. Grafana split their charts in early 2026 into commercial-tier and community-tier repos. The URLs look symmetrical but are different. I now verify every chart's current repo before pinning, and prefer specific version pins over 'latest' — a chart that moves repos can break a 'latest' install silently."
 
 ---
 
@@ -377,9 +348,6 @@ Verified live: `helm repo add grafana https://grafana.github.io/helm-charts && h
 
 The Helm ecosystem moves fast. Charts can change repo URLs, structural conventions, and major versions every 6-18 months. Trust nothing about chart versions in any document — including documentation given by tools — without verifying. The pattern is: `helm search repo` for current versions, `helm show values` for current structure, `helm template` for rendered output, before committing.
 
-### Interview talking point
-
-> "I ran into stale chart version numbers carried forward from older tutorials. The right discipline: `helm search repo --versions` is a 10-second check that prevents real bugs. I now verify every targetRevision against live `helm search` output before pinning. This is part of a four-step pre-commit pattern I follow for any Helm-based work: search for current version, show values for current structure, render with my values via helm template, then commit. Maybe 90 seconds total, catches 80% of 'silently misconfigured chart' bugs."
 
 ---
 
@@ -408,9 +376,6 @@ Major-version Helm chart bumps frequently restructure values. Old fields are ren
 
 **Chart-version structural drift is the silent killer.** A values.yaml written for chart 6.x silently produces wrong behavior in 13.x — fields are ignored, defaults apply, pods look like they're working but aren't configured as intended. Discipline: before any chart-version upgrade, run `helm show values` and diff against existing values.yaml. Look for keys that disappeared, were renamed, or moved nesting levels.
 
-### Interview talking point
-
-> "I was about to deploy Loki using values.yaml written for an older chart version. Helm charts are tolerant — they silently ignore unrecognized fields and apply defaults. The chart would have deployed but in the wrong mode, with wrong config. I caught it by running `helm show values` against the current chart version and `helm template` to inspect the rendered output. The architectural lesson: chart-version structural drift is silent. Always verify your values.yaml against the chart's current expected structure before pinning."
 
 ---
 
@@ -439,9 +404,6 @@ Grafana stores admin credentials in **two places**: environment variables (set a
 
 Any application with a persistent DB containing credentials has this property. Future model-serving and ML-platform components (KServe, MLflow, etc.) will need the same care. The bootstrapping pattern: provide credentials via env vars on first startup, the application persists them, subsequent env-var changes are ignored. To update post-bootstrap, either wipe the PV or use the application's admin tooling to reset.
 
-### Interview talking point
-
-> "Grafana stores admin credentials in two places: env vars from the Secret, and an internal SQLite database on the PVC. On first startup, env vars seed the DB. After that, env-var changes are ignored — the DB is the source of truth. So switching to ESO-sourced credentials after Grafana already started didn't actually update the live password. The fix is `grafana cli admin reset-admin-password` inside the pod once. Architectural takeaway: any application with a persistent DB containing credentials has this property; account for it when designing credential rotation."
 
 ---
 
@@ -470,9 +432,6 @@ External Secrets Operator's admission webhook injects default fields on External
 
 **ArgoCD owns spec, the controller owns status and admission-injected fields.** This boundary is implicit but not enforced — ArgoCD doesn't know which fields are controller-owned. Use `ignoreDifferences` to make the boundary explicit. The same pattern applies to cert-manager Certificates, Karpenter NodePools, and any CRD whose controller writes status or injects defaults.
 
-### Interview talking point
-
-> "When you have a CRD managed by another controller, ArgoCD's default drift detection conflicts with that controller. ArgoCD reports OutOfSync because the controller writes fields ArgoCD doesn't see in Git. The fix is `ignoreDifferences` with jqPathExpressions for the controller-owned fields, plus `RespectIgnoreDifferences=true` in syncOptions so the sync engine respects the rule. Architectural takeaway: in GitOps, ArgoCD owns spec, and other controllers own status and admission-injected fields. That boundary is implicit but not enforced — you have to make it explicit per Application."
 
 ---
 
@@ -502,9 +461,6 @@ In Kubernetes thinking, "Application" usually means a workload that runs and doe
 
 **Architectural instincts about "this feels wrong" are signals worth investigating.** In this case, the instinct correctly flagged that "Application per resource" doesn't scale and conflates the GitOps unit with the Kubernetes resource type. The co-located pattern with multi-source Applications is what real teams use.
 
-### Interview talking point
-
-> "I had each secret as its own ArgoCD Application — clean conceptually but it doesn't scale and it conflates GitOps reconciliation units with Kubernetes resource types. I refactored to co-locate secrets with their consuming workloads using ArgoCD's multi-source pattern: the chart from one source, supporting manifests like ExternalSecrets from another source filtered to a specific path. Each workload's folder now contains its chart values, its secrets, and any other supporting resources — single mental unit per workload. Scales naturally to dozens of workloads."
 
 ---
 
@@ -532,10 +488,6 @@ EKS only creates a `gp2` StorageClass by default. The `gp3` StorageClass — mod
 ### Architectural takeaway
 
 On EKS, treat `StorageClass` as platform-level configuration, not workload-level. Define modern defaults (gp3) once in the platform module so individual workloads don't need to specify storage classes at all. Same principle applies to networking defaults (NetworkPolicies), security defaults (PodSecurityPolicy successors), etc. — push platform decisions to the platform layer.
-
-### Interview talking point
-
-> "EKS only creates a gp2 StorageClass by default. gp3 is the modern default — ~20% cheaper, decoupled IOPS from size — but you have to define it yourself. I added a `storage_classes.tf` to the platform Terraform module that defines gp3 and unsets gp2's default annotation. Every future workload now gets gp3 without specifying storage classes. The lesson: treat StorageClass as platform infrastructure, not workload config."
 
 ---
 
@@ -565,9 +517,6 @@ AWS VPC CNI gives every pod a real VPC IP. Each EC2 instance has a hard limit on
 
 **VPC CNI gives pods first-class VPC networking but introduces density constraints absent in overlay CNIs.** Prefix delegation removes the constraint without sacrificing the integration benefit. Always configure prefix delegation for non-trivial workloads on EKS — it's a one-line change with 6× density improvement at zero cost. This is one of the highest-ROI EKS configurations and one of the most-asked-about in interviews.
 
-### Interview talking point
-
-> "On EKS, the default VPC CNI gives every pod a real VPC IP, capped by ENI/IP-per-ENI limits of the instance type. A t3.medium can only run about 17 pods. I hit this wall when my observability stack pushed the cluster past capacity. The fix is enabling VPC CNI prefix delegation — `ENABLE_PREFIX_DELEGATION=true` on the managed addon. Prefix delegation allocates /28 prefixes (16 IPs each) per ENI instead of individual IPs, raising t3.medium density to ~110 pods. Cost-neutral, modern AWS-recommended approach. Architectural lesson: VPC CNI gives pods first-class VPC networking but introduces density constraints. Prefix delegation removes them without sacrificing the integration benefit. Always configure it for non-trivial production EKS clusters."
 
 ---
 
@@ -597,9 +546,6 @@ Used (A) for ad-hoc verification and (B) for repeatable in-cluster checks. The m
 
 **Production-grade container images are minimal by design.** When you can't shell in with familiar tools, the right pattern is: port-forward for one-off checks, ephemeral debug pods for in-cluster checks, kubectl debug for attaching to running pods. Trying to "fix" the lack of tooling by using bigger base images is the wrong instinct — it expands attack surface and image size for marginal debugging convenience.
 
-### Interview talking point
-
-> "I tried to verify Loki health with `kubectl exec` and a wget command. The command failed because Loki's container is minimal — no wget, no curl, just the binary. This is correct behavior for production-grade images. The right pattern is port-forward + curl from your laptop, or spin up a one-off curl pod with `kubectl run`. Architectural principle: minimal containers are the goal; debugging is a separate concern with separate tooling."
 
 ---
 ## Issue 19 — VPC CNI prefix delegation requires TWO independent settings
@@ -663,9 +609,6 @@ The deeper lesson: **silent acceptance of configuration that doesn't take effect
 
 This is also one of the strongest arguments for Karpenter over managed node groups: Karpenter handles all three pieces (CNI mode, max-pods, AMI bootstrap) transparently per node. Manually configured node groups require explicit per-AMI alignment that's easy to get wrong.
 
-### Interview talking point
-
-> "I hit the EKS pod density wall on a t3.medium cluster. Enabling VPC CNI prefix delegation alone didn't fix it — kubelet was still reporting 17 pods because `--max-pods` is set at boot via the EKS bootstrap mechanism, independent of CNI configuration. The first attempt — `bootstrap_extra_args` — silently did nothing because the cluster runs AL2023, where bootstrap is `nodeadm`-based, not the legacy script. The fix was `cloudinit_pre_nodeadm` injecting a NodeConfig YAML for kubelet. Architectural lesson: pod density is a three-layer setting (CNI plugin, kubelet, AMI bootstrap), and they're independent. This is one of the strongest arguments for Karpenter — it handles all three transparently per node."
 
 ---
 
@@ -721,9 +664,6 @@ Within ~60 seconds, DaemonSets redeployed onto the new nodes. Nodes transitioned
 
 The saved time of terminating both at once isn't worth the recovery time when something goes wrong. This is one of those infrastructure principles that's easy to internalize after a single incident — you never make this mistake again.
 
-### Interview talking point
-
-> "I terminated both EKS worker nodes at once to force a kubelet config recalculation. The replacements joined but stayed NotReady because the EKS managed addons couldn't redeploy their DaemonSets during the brief window where the data plane had zero nodes. The fix was forcing addon reconciliation via `aws eks update-addon --resolve-conflicts OVERWRITE`. The architectural lesson: always roll EKS nodes one at a time, never kill the entire data plane simultaneously, even with managed addons. The saved time isn't worth the recovery cost."
 
 ---
 ## Issue 21 — Admission webhook deadlock locked out kube-system
@@ -795,9 +735,295 @@ This makes the webhook opt-in: it applies only to namespaces explicitly labeled 
 
 **The emergency lever** — `kubectl delete mutatingwebhookconfiguration <name>` — is worth memorizing. When a cluster is hopelessly deadlocked because a webhook is unreachable, this command is your last resort. The controller will recreate the webhook when it starts.
 
-### Interview talking point
+---
+---
+## Issue 22 — EKS Extended Support pricing trap
 
-> "I hit a circular dependency where the AWS Load Balancer Controller's admission webhook was intercepting aws-node DaemonSet pod creation, but the controller itself couldn't run because nodes were NotReady waiting for aws-node. Classic webhook deadlock. The emergency lever was deleting the MutatingWebhookConfiguration directly — `kubectl delete mutatingwebhookconfiguration aws-load-balancer-webhook` — letting kube-system bootstrap, then the controller recreated the webhook on its own startup. The permanent fix is namespace-scoping the webhook so it never intercepts kube-system. The lesson: cluster-wide admission webhooks must be opt-in, never allowed to intercept system namespaces, or you risk this deadlock on any cluster recovery."
+**Phase:** Phase 4.5 — Kubernetes version upgrade
+
+### Problem
+
+May 2026 bill showed $26.95 for EKS against an expected ~$8. Line item
+breakdown revealed two separate charges for the exact same 44.917
+cluster-hours: `Amazon EKS cluster usage` at $4.49 and `Amazon EKS
+extended support usage` at $22.46. The cluster had been on Kubernetes
+1.31.
+
+### Why it happened
+
+EKS bills the control plane in two tiers based on Kubernetes minor
+version:
+
+- **Standard support:** $0.10/hr — the price everyone quotes and
+  budgets for
+- **Extended support:** $0.60/hr — triggered automatically when your
+  version exits the ~14-month standard support window
+
+The transition is silent. No banner in the EKS console. No warning
+during `terraform apply`. AWS sends a Health Dashboard notification
+60+ days in advance, easy to miss. The cluster continues running
+normally — the only signal is a Cost Explorer line item, and only if
+you expand the EKS breakdown.
+
+The compounding factor: my `kubernetes_version` variable had a comment
+saying `# Latest stable EKS version as of early 2026`. It was accurate
+when written. It silently became wrong as the support window moved.
+
+### Options considered
+
+- **A — Upgrade the running cluster sequentially (1.31 → 1.32 → 1.33
+  → 1.34).** Correct approach for long-lived production clusters where
+  destroy is not an option. Each step takes 15–20 minutes, must be done
+  one minor version at a time.
+- **B — Destroy and recreate at the target version directly.** Valid
+  only for ephemeral clusters. Jump to any supported version in a single
+  apply — no sequential steps needed.
+
+### What I chose
+
+**B** — destroyed the cluster, updated `kubernetes_version = "1.34"` in
+`terraform/cluster/variables.tf`, applied fresh. The ephemeral
+destroy/apply workflow turns a multi-hour sequential upgrade into a
+single variable change. Updated the variable description to document the
+current support window explicitly so the drift can't silently recur.
+
+```hcl
+variable "kubernetes_version" {
+  type    = string
+  default = "1.34"
+  description = <<-EOT
+    Kubernetes minor version for EKS control plane and managed addons.
+    Standard support window (no surcharge) as of May 2026:
+      Standard : 1.33, 1.34, 1.35, 1.36
+      Extended  : 1.30, 1.31, 1.32  ← 6x hourly cost, avoid these
+    Review quarterly:
+    https://docs.aws.amazon.com/eks/latest/userguide/kubernetes-versions.html
+  EOT
+}
+```
+
+### Architectural takeaway
+
+This is a **time-decaying configuration** — correct when written,
+silently wrong as time passes, with financial consequences. The same
+pattern applies to TLS certificates, IAM access keys, container base
+images with known CVEs, and deprecated API versions. A robust platform
+needs a mechanism to surface these proactively: variable descriptions
+with expiry context, quarterly version reviews, and billing alarms set
+low enough to catch the change within days rather than at month-end.
+
+For a personal lab this cost ~€20 extra. At 200 clusters with a $0.50/hr
+surcharge, that is $876,000/year of preventable spend. The fix is always
+the same: lifecycle awareness, not reactive billing analysis.
+
+
+---
+## Issue 23 — Interactive Terraform destroy prompt as a cost risk
+
+**Phase:** Phase 4.5 — operational discipline
+
+### Problem
+
+Ran `terraform destroy` at the end of a Saturday session, saw the
+confirmation prompt, got distracted by personal work, and forgot to
+answer it. The cluster ran unattended from Saturday 6 PM to Monday
+8 AM — approximately 38 hours — billing continuously at the
+extended-support rate throughout that window.
+
+### Why it happened
+
+The Terraform confirmation prompt (`Do you really want to destroy all
+resources? Enter 'yes' to confirm`) is designed as a safety gate. In a
+daily destroy/apply workflow, it becomes a liability — a hanging process
+that is indistinguishable from a completed destroy if you walk away
+before answering.
+
+The failure mode is subtle: shell history shows the `terraform destroy`
+command was run. The terminal is not closed. Nothing signals that it is
+waiting for input. Easy to assume it completed.
+
+### Options considered
+
+- **A — Always verify completion before walking away.** Run an explicit
+  post-destroy check (`aws eks list-clusters`, `aws ec2
+  describe-nat-gateways`) as a manual step after every session. Simple,
+  requires no tooling changes, but depends on discipline.
+- **B — Move to `-auto-approve` with the safety gate at the Taskfile
+  level.** The Taskfile `prompt` field presents a confirmation before
+  the automation starts. Once confirmed, terraform never waits for
+  input again. The hanging-prompt failure mode is eliminated entirely.
+
+### What I chose
+
+**A** as an immediate habit change, **B** as the target state once the
+Taskfile is formalised in Phase 5. Added the following end-of-session
+verification as a discipline until then:
+
+```bash
+# Run after every destroy — only walk away when both return empty
+aws eks list-clusters \
+  --region eu-central-1 \
+  --profile mlops-platform
+# Expected: { "clusters": [] }
+
+aws ec2 describe-nat-gateways \
+  --region eu-central-1 \
+  --profile mlops-platform \
+  --filter "Name=state,Values=available,pending" \
+  --query 'NatGateways[].NatGatewayId'
+# Expected: []
+```
+
+Target Taskfile pattern for Phase 5:
+
+```yaml
+tasks:
+  mlops-down:
+    desc: "Destroy MLOps platform — confirms before proceeding"
+    prompt: "This will destroy the entire MLOps cluster. Continue?"
+    cmds:
+      - cd terraform/platform && terraform destroy -auto-approve
+      - cd terraform/cluster && terraform destroy -auto-approve
+      - cd terraform/network && terraform destroy -auto-approve
+```
+
+### Architectural takeaway
+
+**Interactive prompts mid-automation are a liability in daily
+workflows.** The discipline for ephemeral lab infrastructure: make the
+workflow either fully automated with a pre-flight confirmation at a
+higher level, or fully manual with an explicit end-state verification
+step. Never a hybrid where the automation requires a mid-run human
+response that is easy to miss.
+
+This incident also illustrates why low-threshold billing alarms matter
+independently of operational discipline. Even with perfect habits,
+unexpected spend happens. A CloudWatch billing alarm at €15/month would
+have surfaced this by Sunday morning rather than at month-end.
+
+
+---
+## Issue 24 — StatefulSet `creationTimestamp: null` causes permanent ArgoCD OutOfSync loop
+
+**Phase:** Phase 4.5 — GitOps validation post cluster rebuild
+
+### Problem
+
+After a clean cluster rebuild on Kubernetes 1.34, the Loki Application
+showed `Healthy` but `OutOfSync`. ArgoCD had performed 17 automated
+self-heal attempts in a single session — each one succeeding (`Sync OK`,
+`phase: Succeeded`), then immediately triggering again. The diff showed
+a single line on the live side that was absent from Git:
+
+```yaml
+# Live cluster (right side of diff)
+metadata:
+  creationTimestamp: null   # ← injected by Kubernetes API server
+  name: storage
+```
+
+### Why it happened
+
+Kubernetes automatically injects `creationTimestamp: null` into
+`volumeClaimTemplates.metadata` when storing a StatefulSet — a field
+the API server adds that does not exist in the Helm chart output and
+should not be added to Git. ArgoCD detects this as drift, syncs the
+StatefulSet (succeeds), Kubernetes immediately re-injects the field,
+ArgoCD detects drift again. Infinite loop.
+
+Two attempted fixes did not resolve it:
+
+**Attempt 1 — `ignoreDifferences` with `jsonPointers`:**
+```yaml
+ignoreDifferences:
+  - group: apps
+    kind: StatefulSet
+    name: loki
+    jsonPointers:
+      - /spec/volumeClaimTemplates/0/metadata/creationTimestamp
+```
+Still OutOfSync.
+
+**Attempt 2 — `ignoreDifferences` with `jqPathExpressions` plus
+`RespectIgnoreDifferences=true`:**
+```yaml
+ignoreDifferences:
+  - group: apps
+    kind: StatefulSet
+    name: loki
+    jqPathExpressions:
+      - .spec.volumeClaimTemplates[].metadata.creationTimestamp
+syncOptions:
+  - RespectIgnoreDifferences=true
+```
+Still OutOfSync.
+
+Both attempts failed because the Application had `ServerSideApply=true`
+in `syncOptions`. This is a confirmed open bug in ArgoCD (issues #11143
+and #24791, present from v2.x through v3.x): `ignoreDifferences` is not
+reliably respected by the server-side apply diff engine for
+`volumeClaimTemplates` fields, regardless of whether `jsonPointers` or
+`jqPathExpressions` is used.
+
+### Options considered
+
+- **A — Remove `ServerSideApply=true` from the Loki Application.**
+  Loki has no CRDs and no admission webhooks requiring server-side field
+  ownership tracking. Client-side apply is correct for this workload.
+  `ignoreDifferences` with `jsonPointers` works correctly under
+  client-side apply.
+- **B — Fix at the `argocd-cm` ConfigMap level with a global
+  `managedFieldsManagers` customisation.** System-wide change affecting
+  all StatefulSets. Not GitOps-managed unless patched into the ArgoCD
+  Helm values. Heavier and broader than the problem warrants.
+
+### What I chose
+
+**A — removed `ServerSideApply=true` from the Loki Application.**
+Resolved immediately on the next ArgoCD reconciliation. Final working
+manifest:
+
+```yaml
+ignoreDifferences:
+  - group: apps
+    kind: StatefulSet
+    name: loki
+    jsonPointers:
+      - /spec/volumeClaimTemplates/0/metadata/creationTimestamp
+
+syncPolicy:
+  automated:
+    prune: true
+    selfHeal: true
+  syncOptions:
+    - CreateNamespace=true
+    # ServerSideApply=true ← removed; not needed for this workload
+```
+
+### Architectural takeaway
+
+**`ServerSideApply` and drift protection are orthogonal concerns that
+are easy to conflate.**
+
+- `selfHeal: true` protects against humans changing cluster state —
+  ArgoCD detects and reverts manual `kubectl edit` changes.
+- `ServerSideApply=true` protects against multiple controllers
+  overwriting each other's fields — relevant when ArgoCD and an HPA,
+  or ArgoCD and a mutating webhook, share ownership of the same fields.
+
+They solve different problems. Applying `ServerSideApply` as a blanket
+option to all Applications introduces this `volumeClaimTemplates` diff
+bug for any StatefulSet-based workload without providing any benefit
+unless competing field ownership actually exists.
+
+Any StatefulSet with `volumeClaimTemplates` is susceptible to the
+`creationTimestamp` drift on every fresh cluster bring-up. It is a
+predictable first-deploy issue to check for on Loki, Prometheus,
+any database-backed workload, and any future ML platform component
+(KServe model servers, MLflow tracking server) added in Phase 6.
+
+
+
 ---
 
 ## Cross-cutting themes

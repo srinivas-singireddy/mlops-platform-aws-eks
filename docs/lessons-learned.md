@@ -22,7 +22,7 @@ Architectural decisions documented in seven ADRs covering: single-account topolo
 ## Table of contents
 
 | # | Issue | Phase |
-|---|-------|-------|
+|:--|-------|-------|
 | 1 | [NAT instance failed — nodes could not join EKS cluster](#issue-1--nat-instance-failed--nodes-could-not-join-eks-cluster) | Phase 2 |
 | 2 | [kubectl could not connect after first cluster bring-up](#issue-2--kubectl-could-not-connect-after-first-cluster-bring-up) | Phase 2 |
 | 3 | [kubernetes_manifest failed at plan time — CRD not yet installed](#issue-3--kubernetes_manifest-failed-at-plan-time--crd-not-yet-installed) | Phase 3 |
@@ -44,10 +44,9 @@ Architectural decisions documented in seven ADRs covering: single-account topolo
 | 19 | [VPC CNI prefix delegation requires TWO independent settings](#issue-19--vpc-cni-prefix-delegation-requires-two-independent-settings) | Phase 4 |
 | 20 | [Killed both worker nodes simultaneously, lost addon reconciliation](#issue-20--killed-both-worker-nodes-simultaneously-lost-addon-reconciliation) | Phase 4 |
 | 21 | [Admission webhook deadlock locked out kube-system](#issue-21--admission-webhook-deadlock-locked-out-kube-system) | Phase 4 |
-| 22 | [EKS Extended Support pricing trap]
-(#issue-22--eks-extended-support-pricing-trap) | Phase 4 |
-| 23 | [ Interactive Terraform destroy prompt as a cost risk](#issue-23--interactive-terraform--destroy-prompt-as-a-cost-risk) | Phase 4 |
-| 24 | [StatefulSet `creationTimestamp: null` causes permanent ArgoCD OutOfSync loop](#issue-24--statefulset-creationtimestamp-null-causes-permanent-argoc-out-of-sync-loop) | Phase 4 |  
+| 22 | [EKS Extended Support pricing trap](#issue-22--eks-extended-support-pricing-trap) | Phase 4.5 |
+| 23 | [Interactive Terraform destroy prompt as a cost risk](#issue-23--interactive-terraform-destroy-prompt-as-a-cost-risk) | Phase 4.5 |
+| 24 | [StatefulSet `creationTimestamp: null` causes permanent ArgoCD OutOfSync loop](#issue-24--statefulset-creationtimestamp-null-causes-permanent-argocd-outofsync-loop) | Phase 4.5 |
 ---
 
 ## Issue 1 — NAT instance failed — nodes could not join EKS cluster

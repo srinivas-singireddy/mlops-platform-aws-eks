@@ -41,7 +41,13 @@ Architectural decisions documented in seven ADRs covering: single-account topolo
 | 16 | [EBS gp3 StorageClass missing from EKS defaults](#issue-16--ebs-gp3-storageclass-missing-from-eks-defaults) | Phase 4 |
 | 17 | [EKS pod density wall — VPC CNI hard limit](#issue-17--eks-pod-density-wall--vpc-cni-hard-limit) | Phase 4 |
 | 18 | [Minimal containers — wget not in production images](#issue-18--minimal-containers--wget-not-in-production-images) | Phase 4 |
-
+| 19 | [VPC CNI prefix delegation requires TWO independent settings](#issue-19--vpc-cni-prefix-delegation-requires-two-independent-settings) | Phase 4 |
+| 20 | [Killed both worker nodes simultaneously, lost addon reconciliation](#issue-20--killed-both-worker-nodes-simultaneously-lost-addon-reconciliation) | Phase 4 |
+| 21 | [Admission webhook deadlock locked out kube-system](#issue-21--admission-webhook-deadlock-locked-out-kube-system) | Phase 4 |
+| 22 | [EKS Extended Support pricing trap]
+(#issue-22--eks-extended-support-pricing-trap) | Phase 4 |
+| 23 | [ Interactive Terraform destroy prompt as a cost risk](#issue-23--interactive-terraform--destroy-prompt-as-a-cost-risk) | Phase 4 |
+| 24 | [StatefulSet `creationTimestamp: null` causes permanent ArgoCD OutOfSync loop](#issue-24--statefulset-creationtimestamp-null-causes-permanent-argoc-out-of-sync-loop) | Phase 4 |  
 ---
 
 ## Issue 1 — NAT instance failed — nodes could not join EKS cluster
@@ -548,6 +554,7 @@ Used (A) for ad-hoc verification and (B) for repeatable in-cluster checks. The m
 
 
 ---
+
 ## Issue 19 — VPC CNI prefix delegation requires TWO independent settings
 
 **Phase:** Phase 4 — observability stack scaling

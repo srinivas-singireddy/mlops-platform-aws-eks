@@ -50,6 +50,7 @@ resource "aws_subnet" "private" {
   tags = {
     Name                              = "${var.name}-private-${var.azs[count.index]}"
     "kubernetes.io/role/internal-elb" = "1"
+    "karpenter.sh/discovery"          = var.name # NEW
   }
 }
 

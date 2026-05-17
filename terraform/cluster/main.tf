@@ -136,6 +136,12 @@ module "eks" {
   tags = {
     Environment = "lab"
   }
+
+  # Inside your module "eks" block, add:
+  node_security_group_tags = {
+    "karpenter.sh/discovery" = var.cluster_name
+  }
+
 }
 
 # -----------------------------------------------------------------------------

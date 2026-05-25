@@ -22,6 +22,7 @@ tasks:
       - task: patch-karpenter-endpoint
       - task: commit-deploy-repo
       - task: apply-platform
+      - task: patch-alertmanager-webhooks
 
   apply-network:
     desc: "Apply terraform/network"
@@ -56,6 +57,34 @@ tasks:
         echo "Patching clusterEndpoint to: $ENDPOINT"
         sed -i '' "s|clusterEndpoint:.*|clusterEndpoint: \"${ENDPOINT}\"|" \
           {{.DEPLOY_REPO}}/apps/karpenter/application.yaml
+
+  patch-alertmanager-webhooks:        # ← ADD HERE, after patch-karpenter-endpoint
+    desc: "Patch Slack webhook URLs into Alertmanager config after apply"
+    cmds:
+      - |
+        ALERTS_URL=$(aws secretsmanager get-secret-value \
+          --secret-id mlops-platform/alertmanager/slack-webhook-alerts \
+          --region {{.REGION}} \
+          --profile {{.PROFILE}} \
+          --query SecretString \
+          --output text)
+        CRITICAL_URL=$(aws secretsmanager get-secret-value \
+          --secret-id mlops-platform/alertmanager/slack-webhook-critical \
+          --region {{.REGION}} \
+          --profile {{.PROFILE}} \
+          --query SecretString \
+          --output text)
+        kubectl get secret alertmanager-kube-prometheus-stack-alertmanager \
+          -n monitoring -o json \
+          | jq --arg alerts "$ALERTS_URL" --arg critical "$CRITICAL_URL" \
+            '.data["alertmanager.yaml"] |= (. | @base64d |
+              gsub("SLACK_WEBHOOK_ALERTS_PLACEHOLDER"; $alerts) |
+              gsub("SLACK_WEBHOOK_CRITICAL_PLACEHOLDER"; $critical) |
+              @base64)' \
+          | kubectl apply -f -
+        kubectl delete pod -n monitoring \
+          -l app.kubernetes.io/name=alertmanager
+        echo "Alertmanager webhooks patched and pod restarted"
 
   commit-deploy-repo:
     desc: "Commit and push deploy repo after endpoint patch"

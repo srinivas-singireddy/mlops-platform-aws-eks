@@ -94,6 +94,8 @@ data "aws_iam_policy_document" "karpenter_controller" {
       "iam:CreateInstanceProfile",
       "iam:DeleteInstanceProfile",
       "iam:GetInstanceProfile",
+      "iam:ListInstanceProfiles",        # NEW — required by 1.8.6
+      "iam:ListInstanceProfilesForRole", # NEW — required by 1.8.6
       "iam:RemoveRoleFromInstanceProfile",
       "iam:TagInstanceProfile",
     ]

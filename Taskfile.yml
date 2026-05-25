@@ -58,7 +58,7 @@ tasks:
         sed -i '' "s|clusterEndpoint:.*|clusterEndpoint: \"${ENDPOINT}\"|" \
           {{.DEPLOY_REPO}}/apps/karpenter/application.yaml
 
-  patch-alertmanager-webhooks:        # ← ADD HERE, after patch-karpenter-endpoint
+  patch-alertmanager-webhooks:
     desc: "Patch Slack webhook URLs into Alertmanager config after apply"
     cmds:
       - |
@@ -129,15 +129,27 @@ tasks:
       - echo "All NodeClaims terminated. Safe to destroy."
 
   delete-crds:
-    desc: "Delete CRDs with keep policy that block namespace termination"
+    desc: "Delete CRDs and namespaces that block Terraform destroy"
     cmds:
+      - echo "Deleting PVCs to unblock namespace termination..."
+      - |
+        kubectl delete pvc -n monitoring --all \
+          --ignore-not-found=true || true
+      - echo "Force removing stuck namespace finalizers..."
+      - |
+        for ns in argocd monitoring cert-manager external-secrets karpenter; do
+          kubectl get namespace $ns -o json 2>/dev/null \
+            | jq '.spec.finalizers = []' \
+            | kubectl replace --raw /api/v1/namespaces/$ns/finalize -f - \
+            2>/dev/null || true
+        done
       - echo "Deleting ArgoCD CRDs..."
       - |
         kubectl delete crd \
           applications.argoproj.io \
           applicationsets.argoproj.io \
           appprojects.argoproj.io \
-          --ignore-not-found=true
+          --ignore-not-found=true --timeout=60s || true
       - echo "Deleting cert-manager CRDs..."
       - |
         kubectl delete crd \
@@ -147,7 +159,7 @@ tasks:
           clusterissuers.cert-manager.io \
           issuers.cert-manager.io \
           orders.acme.cert-manager.io \
-          --ignore-not-found=true
+          --ignore-not-found=true --timeout=60s || true
       - echo "Deleting Karpenter CRDs..."
       - |
         kubectl delete crd \
@@ -155,7 +167,7 @@ tasks:
           nodeclaims.karpenter.sh \
           nodepools.karpenter.sh \
           nodeoverlays.karpenter.sh \
-          --ignore-not-found=true
+          --ignore-not-found=true --timeout=60s || true
       - echo "CRD cleanup complete"
 
   destroy-platform:

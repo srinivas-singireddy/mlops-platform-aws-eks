@@ -65,6 +65,7 @@ tasks:
       - |
         git diff --staged --quiet || git commit -m "chore: update Karpenter clusterEndpoint for new cluster"
       - git push
+
   apply-platform:
     desc: "Apply terraform/platform"
     dir: terraform/platform
@@ -79,6 +80,7 @@ tasks:
     desc: "Full cluster teardown — safe sequence with NodePool deletion first"
     cmds:
       - task: delete-nodepool
+      - task: delete-crds
       - task: destroy-platform
       - task: destroy-cluster
       - task: destroy-network
@@ -96,6 +98,36 @@ tasks:
           sleep 10
         done
       - echo "All NodeClaims terminated. Safe to destroy."
+
+  delete-crds:
+    desc: "Delete CRDs with keep policy that block namespace termination"
+    cmds:
+      - echo "Deleting ArgoCD CRDs..."
+      - |
+        kubectl delete crd \
+          applications.argoproj.io \
+          applicationsets.argoproj.io \
+          appprojects.argoproj.io \
+          --ignore-not-found=true
+      - echo "Deleting cert-manager CRDs..."
+      - |
+        kubectl delete crd \
+          certificaterequests.cert-manager.io \
+          certificates.cert-manager.io \
+          challenges.acme.cert-manager.io \
+          clusterissuers.cert-manager.io \
+          issuers.cert-manager.io \
+          orders.acme.cert-manager.io \
+          --ignore-not-found=true
+      - echo "Deleting Karpenter CRDs..."
+      - |
+        kubectl delete crd \
+          ec2nodeclasses.karpenter.k8s.aws \
+          nodeclaims.karpenter.sh \
+          nodepools.karpenter.sh \
+          nodeoverlays.karpenter.sh \
+          --ignore-not-found=true
+      - echo "CRD cleanup complete"
 
   destroy-platform:
     desc: "Destroy terraform/platform"

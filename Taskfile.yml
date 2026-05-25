@@ -1,0 +1,191 @@
+version: '3'
+
+# Global variables available to all tasks
+vars:
+  CLUSTER_NAME: mlops-lab
+  REGION: eu-central-1
+  PROFILE: mlops-platform
+  DEPLOY_REPO: ../mlops-platform-deploy
+
+# ─────────────────────────────────────────────────────────────
+# BRING-UP
+# ─────────────────────────────────────────────────────────────
+
+tasks:
+
+  apply:
+    desc: "Full cluster bring-up — network → cluster → kubeconfig → patch → platform"
+    cmds:
+      - task: apply-network
+      - task: apply-cluster
+      - task: kubeconfig
+      - task: patch-karpenter-endpoint
+      - task: commit-deploy-repo
+      - task: apply-platform
+
+  apply-network:
+    desc: "Apply terraform/network"
+    dir: terraform/network
+    cmds:
+      - terraform apply -auto-approve
+
+  apply-cluster:
+    desc: "Apply terraform/cluster"
+    dir: terraform/cluster
+    cmds:
+      - terraform apply -auto-approve
+
+  kubeconfig:
+    desc: "Update kubeconfig for mlops-lab"
+    cmds:
+      - aws eks update-kubeconfig
+          --name {{.CLUSTER_NAME}}
+          --region {{.REGION}}
+          --profile {{.PROFILE}}
+
+  patch-karpenter-endpoint:
+    desc: "Update clusterEndpoint in deploy repo after cluster recreate"
+    cmds:
+      - |
+        ENDPOINT=$(aws eks describe-cluster \
+          --name {{.CLUSTER_NAME}} \
+          --region {{.REGION}} \
+          --profile {{.PROFILE}} \
+          --query 'cluster.endpoint' \
+          --output text)
+        echo "Patching clusterEndpoint to: $ENDPOINT"
+        sed -i '' "s|clusterEndpoint:.*|clusterEndpoint: \"${ENDPOINT}\"|" \
+          {{.DEPLOY_REPO}}/apps/karpenter/application.yaml
+
+  commit-deploy-repo:
+    desc: "Commit and push deploy repo after endpoint patch"
+    dir: "{{.DEPLOY_REPO}}"
+    cmds:
+      - git add apps/karpenter/application.yaml
+      - |
+        git diff --staged --quiet || git commit -m "chore: update Karpenter clusterEndpoint for new cluster"
+      - git push
+  apply-platform:
+    desc: "Apply terraform/platform"
+    dir: terraform/platform
+    cmds:
+      - terraform apply -auto-approve
+
+# ─────────────────────────────────────────────────────────────
+# DESTROY
+# ─────────────────────────────────────────────────────────────
+
+  destroy:
+    desc: "Full cluster teardown — safe sequence with NodePool deletion first"
+    cmds:
+      - task: delete-nodepool
+      - task: destroy-platform
+      - task: destroy-cluster
+      - task: destroy-network
+      - task: verify-clean
+
+  delete-nodepool:
+    desc: "Delete Karpenter NodePool and wait for all NodeClaims to terminate"
+    cmds:
+      - echo "Deleting Karpenter NodePool..."
+      - kubectl delete nodepool default --ignore-not-found=true
+      - echo "Waiting for NodeClaims to drain..."
+      - |
+        while kubectl get nodeclaim 2>/dev/null | grep -q "default-"; do
+          echo "  NodeClaims still present, waiting 10s..."
+          sleep 10
+        done
+      - echo "All NodeClaims terminated. Safe to destroy."
+
+  destroy-platform:
+    desc: "Destroy terraform/platform"
+    dir: terraform/platform
+    cmds:
+      - terraform destroy -auto-approve
+
+  destroy-cluster:
+    desc: "Destroy terraform/cluster"
+    dir: terraform/cluster
+    cmds:
+      - terraform destroy -auto-approve
+
+  destroy-network:
+    desc: "Destroy terraform/network"
+    dir: terraform/network
+    cmds:
+      - terraform destroy -auto-approve
+
+  verify-clean:
+    desc: "Confirm no running resources remain"
+    cmds:
+      - echo "=== EKS Clusters ==="
+      - aws eks list-clusters
+          --region {{.REGION}}
+          --profile {{.PROFILE}}
+      - echo "=== NAT Gateways ==="
+      - |
+        aws ec2 describe-nat-gateways \
+          --region {{.REGION}} \
+          --profile {{.PROFILE}} \
+          --filter "Name=state,Values=available,pending" \
+          --query 'NatGateways[].NatGatewayId'
+
+# ─────────────────────────────────────────────────────────────
+# UTILITIES
+# ─────────────────────────────────────────────────────────────
+
+  sanity:
+    desc: "Run full sanity check — commits, cluster state, Karpenter health"
+    cmds:
+      - echo "=== IaC repo commits ==="
+      - git log --oneline -3
+      - echo "=== Deploy repo commits ==="
+      - git -C {{.DEPLOY_REPO}} log --oneline -3
+      - echo "=== Running clusters (must be empty before apply) ==="
+      - aws eks list-clusters
+          --region {{.REGION}}
+          --profile {{.PROFILE}}
+      - echo "=== NAT Gateways (must be empty before apply) ==="
+      - |
+        aws ec2 describe-nat-gateways \
+          --region {{.REGION}} \
+          --profile {{.PROFILE}} \
+          --filter "Name=state,Values=available,pending" \
+          --query 'NatGateways[].NatGatewayId'
+
+  karpenter-status:
+    desc: "Check Karpenter health — pods, nodeclass, nodepool, nodeclaims"
+    cmds:
+      - echo "=== Karpenter pods ==="
+      - kubectl get pods -n karpenter -o wide
+      - echo "=== EC2NodeClass ==="
+      - kubectl get ec2nodeclass default
+      - echo "=== NodePool ==="
+      - kubectl get nodepool default
+      - echo "=== NodeClaims ==="
+      - kubectl get nodeclaim
+      - echo "=== Karpenter logs (errors only) ==="
+      - |
+        kubectl logs -n karpenter \
+          -l app.kubernetes.io/name=karpenter \
+          --tail=20 | grep -i "error\|warn" || echo "No errors"
+
+  nodes:
+    desc: "Show all nodes with labels and capacity"
+    cmds:
+      - kubectl get nodes -o wide
+      - echo "--- Karpenter nodes ---"
+      - kubectl get nodes -l provisioner=karpenter
+      - echo "--- Managed nodes ---"
+      - kubectl get nodes -l eks.amazonaws.com/nodegroup
+
+  all-pods-healthy:
+    desc: "Show any pods not in Running or Completed state"
+    cmds:
+      - |
+        UNHEALTHY=$(kubectl get pods -A | grep -v Running | grep -v Completed | grep -v NAME)
+        if [ -z "$UNHEALTHY" ]; then
+          echo "All pods healthy"
+        else
+          echo "$UNHEALTHY"
+        fi

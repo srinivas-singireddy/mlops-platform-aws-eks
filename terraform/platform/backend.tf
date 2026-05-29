@@ -1,6 +1,6 @@
 terraform {
   backend "s3" {
-    bucket         = "mlops-tfstate-897175693580"
+    bucket         = "mlops-tfstate-938822141378"
     key            = "platform/terraform.tfstate"
     region         = "eu-central-1"
     dynamodb_table = "mlops-tf-locks"

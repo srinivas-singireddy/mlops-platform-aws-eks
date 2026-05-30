@@ -22,6 +22,7 @@ tasks:
       - task: patch-karpenter-endpoint
       - task: commit-deploy-repo
       - task: apply-platform
+      - task: wait-for-monitoring
       - task: patch-alertmanager-webhooks
 
   apply-network:
@@ -57,6 +58,32 @@ tasks:
         echo "Patching clusterEndpoint to: $ENDPOINT"
         sed -i '' "s|clusterEndpoint:.*|clusterEndpoint: \"${ENDPOINT}\"|" \
           {{.DEPLOY_REPO}}/apps/karpenter/application.yaml
+
+  wait-for-monitoring:
+    desc: "Wait for Alertmanager pod to be ready before patching webhooks"
+    cmds:
+      - echo "Waiting for monitoring namespace..."
+      - |
+        until kubectl get namespace monitoring 2>/dev/null | grep -q Active; do
+          echo "  monitoring namespace not ready, waiting 15s..."
+          sleep 15
+        done
+      - echo "Waiting for Alertmanager secret to exist..."
+      - |
+        until kubectl get secret alertmanager-kube-prometheus-stack-alertmanager \
+          -n monitoring 2>/dev/null; do
+          echo "  Alertmanager secret not ready, waiting 15s..."
+          sleep 15
+        done
+      - echo "Waiting for Alertmanager pod to be ready..."
+      - |
+        until kubectl get pod -n monitoring \
+          -l app.kubernetes.io/name=alertmanager \
+          2>/dev/null | grep -q Running; do
+          echo "  Alertmanager not ready, waiting 15s..."
+          sleep 15
+        done
+      - echo "Alertmanager ready. Proceeding with webhook patch."
 
   patch-alertmanager-webhooks:
     desc: "Patch Slack webhook URLs into Alertmanager config after apply"

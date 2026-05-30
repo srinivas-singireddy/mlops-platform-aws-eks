@@ -1,7 +1,7 @@
 data "terraform_remote_state" "network" {
   backend = "s3"
   config = {
-    bucket  = "mlops-tfstate-897175693580"
+    bucket  = "mlops-tfstate-938822141378"
     key     = "network/terraform.tfstate"
     region  = "eu-central-1"
     profile = "mlops-platform"
@@ -11,7 +11,7 @@ data "terraform_remote_state" "network" {
 data "terraform_remote_state" "cluster" {
   backend = "s3"
   config = {
-    bucket  = "mlops-tfstate-897175693580"
+    bucket  = "mlops-tfstate-938822141378"
     key     = "cluster/terraform.tfstate"
     region  = "eu-central-1"
     profile = "mlops-platform"

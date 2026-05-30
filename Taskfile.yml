@@ -78,8 +78,8 @@ tasks:
           -n monitoring -o json \
           | jq --arg alerts "$ALERTS_URL" --arg critical "$CRITICAL_URL" \
             '.data["alertmanager.yaml"] |= (. | @base64d |
-              gsub("SLACK_WEBHOOK_ALERTS_PLACEHOLDER"; $alerts) |
-              gsub("SLACK_WEBHOOK_CRITICAL_PLACEHOLDER"; $critical) |
+              gsub("https://hooks.slack.com/services/alerts-placeholder"; $alerts) |
+              gsub("https://hooks.slack.com/services/critical-placeholder"; $critical) |
               @base64)' \
           | kubectl apply -f -
         kubectl delete pod -n monitoring \

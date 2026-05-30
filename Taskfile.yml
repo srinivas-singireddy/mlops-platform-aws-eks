@@ -158,10 +158,19 @@ tasks:
   delete-crds:
     desc: "Delete CRDs and namespaces that block Terraform destroy"
     cmds:
-      - echo "Deleting PVCs to unblock namespace termination..."
+      - echo "Removing PVC finalizers to unblock termination..."
+      - |
+        for pvc in $(kubectl get pvc -n monitoring \
+          -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
+          kubectl patch pvc "$pvc" -n monitoring \
+            --type merge \
+            -p '{"metadata":{"finalizers":[]}}' 2>/dev/null || true
+          echo "  Patched PVC: $pvc"
+        done
+      - echo "Deleting PVCs..."
       - |
         kubectl delete pvc -n monitoring --all \
-          --ignore-not-found=true || true
+          --ignore-not-found=true --force --grace-period=0 || true
       - echo "Force removing stuck namespace finalizers..."
       - |
         for ns in argocd monitoring cert-manager external-secrets karpenter; do

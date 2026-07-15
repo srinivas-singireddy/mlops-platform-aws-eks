@@ -14,13 +14,11 @@ vars:
 tasks:
 
   apply:
-    desc: "Full cluster bring-up — network → cluster → kubeconfig → patch → platform"
+    desc: "Full cluster bring-up — network → cluster → kubeconfig → platform"
     cmds:
       - task: apply-network
       - task: apply-cluster
       - task: kubeconfig
-      - task: patch-karpenter-endpoint
-      - task: commit-deploy-repo
       - task: apply-platform
       - task: wait-for-monitoring
       - task: patch-alertmanager-webhooks
@@ -44,20 +42,6 @@ tasks:
           --name {{.CLUSTER_NAME}}
           --region {{.REGION}}
           --profile {{.PROFILE}}
-
-  patch-karpenter-endpoint:
-    desc: "Update clusterEndpoint in deploy repo after cluster recreate"
-    cmds:
-      - |
-        ENDPOINT=$(aws eks describe-cluster \
-          --name {{.CLUSTER_NAME}} \
-          --region {{.REGION}} \
-          --profile {{.PROFILE}} \
-          --query 'cluster.endpoint' \
-          --output text)
-        echo "Patching clusterEndpoint to: $ENDPOINT"
-        sed -i '' "s|clusterEndpoint:.*|clusterEndpoint: \"${ENDPOINT}\"|" \
-          {{.DEPLOY_REPO}}/apps/karpenter/application.yaml
 
   wait-for-monitoring:
     desc: "Wait for Alertmanager pod to be ready before patching webhooks"
@@ -112,15 +96,6 @@ tasks:
         kubectl delete pod -n monitoring \
           -l app.kubernetes.io/name=alertmanager
         echo "Alertmanager webhooks patched and pod restarted"
-
-  commit-deploy-repo:
-    desc: "Commit and push deploy repo after endpoint patch"
-    dir: "{{.DEPLOY_REPO}}"
-    cmds:
-      - git add apps/karpenter/application.yaml
-      - |
-        git diff --staged --quiet || git commit -m "chore: update Karpenter clusterEndpoint for new cluster"
-      - git push
 
   apply-platform:
     desc: "Apply terraform/platform"

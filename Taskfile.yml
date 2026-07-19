@@ -108,78 +108,154 @@ tasks:
 # ─────────────────────────────────────────────────────────────
 
   destroy:
-    desc: "Full cluster teardown — safe sequence with NodePool deletion first"
+    desc: "Full cluster teardown — k8s pre-clean → platform → cluster → network → verify"
     cmds:
-      - task: delete-nodepool
-      - task: delete-crds
+      - task: k8s-preclean
       - task: destroy-platform
       - task: destroy-cluster
       - task: destroy-network
       - task: verify-clean
 
-  delete-nodepool:
-    desc: "Delete Karpenter NodePool and wait for all NodeClaims to terminate"
-    cmds:
-      - echo "Deleting Karpenter NodePool..."
-      - kubectl delete nodepool default --ignore-not-found=true
-      - echo "Waiting for NodeClaims to drain..."
-      - |
-        while kubectl get nodeclaim 2>/dev/null | grep -q "default-"; do
-          echo "  NodeClaims still present, waiting 10s..."
-          sleep 10
-        done
-      - echo "All NodeClaims terminated. Safe to destroy."
+  k8s-preclean:
+      desc: "Ordered Kubernetes teardown before terraform destroy — idempotent, fails hard"
+      cmds:
+        # Reachability guard — skip cleanly if cluster is already gone
+        - |
+          if ! kubectl cluster-info --request-timeout=5s >/dev/null 2>&1; then
+            echo "Cluster unreachable — skipping k8s-preclean (already torn down)."
+            exit 0
+          fi
 
-  delete-crds:
-    desc: "Delete CRDs and namespaces that block Terraform destroy"
+        # 1. Delete ArgoCD Applications GRACEFULLY so the cascade tears down
+        #    the Helm releases (StatefulSets/Deployments). Finalizers intact.
+        - echo "→ Deleting ArgoCD Applications (graceful cascade)..."
+        - |
+          kubectl delete applications -n argocd --all \
+            --ignore-not-found=true --timeout=180s || {
+            echo "  Graceful delete timed out — force-stripping app finalizers..."
+            for app in $(kubectl get applications -n argocd \
+              -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
+              kubectl patch application "$app" -n argocd --type merge \
+                -p '{"metadata":{"finalizers":[]}}' 2>/dev/null || true
+            done
+            kubectl delete applications -n argocd --all \
+              --ignore-not-found=true --timeout=60s || true
+          }
+
+        # 2. Belt-and-braces: delete any workloads the cascade left behind.
+        #    Removes DEMAND (Karpenter refill race) and releases EBS volumes.
+        #    NOTE: test workloads in other namespaces are deleted manually.
+        - echo "→ Deleting remaining workloads in monitoring..."
+        - |
+          kubectl delete statefulset,deployment,replicaset --all -n monitoring \
+            --ignore-not-found=true --timeout=120s || true
+
+        # 3. Wait for pods to ACTUALLY terminate — volumes stay attached until they do
+        - echo "→ Waiting for monitoring pods to terminate..."
+        - |
+          for i in $(seq 1 30); do
+            REMAINING=$(kubectl get pods -n monitoring \
+              --field-selector=status.phase!=Succeeded \
+              -o jsonpath='{.items[*].metadata.name}' 2>/dev/null | wc -w | tr -d ' ')
+            if [ "$REMAINING" = "0" ]; then
+              echo "  All monitoring pods terminated."
+              break
+            fi
+            echo "  $REMAINING pod(s) still terminating, waiting 10s... ($i/30)"
+            sleep 10
+            if [ "$i" -eq 30 ]; then
+              echo "ERROR: monitoring pods still running after 5 minutes."
+              echo "       Volumes cannot detach while pods hold them. Aborting."
+              echo "       Diagnose with: kubectl get pods -n monitoring"
+              exit 1
+            fi
+          done
+
+        # 4. Delete PVCs — should release cleanly now that no pod holds them.
+        #    Finalizer strip is a FALLBACK, not the first move.
+        - echo "→ Deleting PVCs..."
+        - |
+          kubectl delete pvc -n monitoring --all \
+            --ignore-not-found=true --timeout=120s || {
+            echo "  PVC delete timed out — force-stripping finalizers..."
+            for pvc in $(kubectl get pvc -n monitoring \
+              -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
+              kubectl patch pvc "$pvc" -n monitoring --type merge \
+                -p '{"metadata":{"finalizers":[]}}' 2>/dev/null || true
+            done
+            kubectl delete pvc -n monitoring --all \
+              --ignore-not-found=true --force --grace-period=0 || true
+          }
+
+        # 5. Verify against ground truth: poll AWS until volumes are actually gone.
+        - echo "→ Waiting for CSI to delete backing EBS volumes..."
+        - |
+          for i in $(seq 1 12); do
+            VOLS=$(aws ec2 describe-volumes \
+              --region {{.REGION}} --profile {{.PROFILE}} \
+              --filter "Name=tag:ebs.csi.aws.com/cluster-name,Values={{.CLUSTER_NAME}}" \
+              --query 'Volumes[].VolumeId' --output text 2>/dev/null)
+            if [ -z "$VOLS" ]; then
+              echo "  All cluster EBS volumes deleted."
+              break
+            fi
+            echo "  Volumes still present, waiting 10s... ($i/12)"
+            sleep 10
+            if [ "$i" -eq 12 ]; then
+              echo "ERROR: EBS volumes still present after 2 minutes:"
+              echo "       $VOLS"
+              echo "       CSI driver has not deleted them. Destroying the cluster now"
+              echo "       would orphan these volumes. Aborting."
+              exit 1
+            fi
+          done
+
+        # 6. NOW drain compute — safe, because no pending pods remain to refill
+        - echo "→ Deleting Karpenter NodePool and draining NodeClaims..."
+        - kubectl delete nodepool default --ignore-not-found=true --timeout=120s || true
+        - |
+          for i in $(seq 1 30); do
+            if ! kubectl get nodeclaim 2>/dev/null | grep -q "default-"; then
+              echo "  All NodeClaims drained."
+              break
+            fi
+            echo "  NodeClaims still draining, waiting 10s... ($i/30)"
+            sleep 10
+            if [ "$i" -eq 30 ]; then
+              echo "ERROR: NodeClaims still present after 5 minutes."
+              echo "       Karpenter may be re-provisioning for pending pods."
+              echo "       Check with: kubectl get nodeclaim; kubectl get pods -A | grep Pending"
+              exit 1
+            fi
+          done
+
+        # 7. Delete Helm-retained CRDs last — nothing depends on them now
+        - echo "→ Deleting Helm-retained CRDs..."
+        - |
+          kubectl delete crd \
+            applications.argoproj.io applicationsets.argoproj.io appprojects.argoproj.io \
+            certificaterequests.cert-manager.io certificates.cert-manager.io \
+            challenges.acme.cert-manager.io clusterissuers.cert-manager.io \
+            issuers.cert-manager.io orders.acme.cert-manager.io \
+            ec2nodeclasses.karpenter.k8s.aws nodeclaims.karpenter.sh \
+            nodepools.karpenter.sh nodeoverlays.karpenter.sh \
+            --ignore-not-found=true --timeout=60s || true
+        - echo "k8s-preclean complete."
+
+
+  force-finalize:
+    desc: "Break-glass — force-clear finalizers on namespaces stuck Terminating"
     cmds:
-      - echo "Removing PVC finalizers to unblock termination..."
+      - echo "Scanning for namespaces stuck in Terminating..."
       - |
-        for pvc in $(kubectl get pvc -n monitoring \
-          -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
-          kubectl patch pvc "$pvc" -n monitoring \
-            --type merge \
-            -p '{"metadata":{"finalizers":[]}}' 2>/dev/null || true
-          echo "  Patched PVC: $pvc"
-        done
-      - echo "Deleting PVCs..."
-      - |
-        kubectl delete pvc -n monitoring --all \
-          --ignore-not-found=true --force --grace-period=0 || true
-      - echo "Force removing stuck namespace finalizers..."
-      - |
-        for ns in argocd monitoring cert-manager external-secrets karpenter; do
-          kubectl get namespace $ns -o json 2>/dev/null \
+        for ns in $(kubectl get namespace \
+          -o jsonpath='{range .items[?(@.status.phase=="Terminating")]}{.metadata.name}{"\n"}{end}' 2>/dev/null); do
+          echo "  Force-finalizing namespace: $ns"
+          kubectl get namespace "$ns" -o json \
             | jq '.spec.finalizers = []' \
-            | kubectl replace --raw /api/v1/namespaces/$ns/finalize -f - \
-            2>/dev/null || true
+            | kubectl replace --raw "/api/v1/namespaces/$ns/finalize" -f - 2>/dev/null || true
         done
-      - echo "Deleting ArgoCD CRDs..."
-      - |
-        kubectl delete crd \
-          applications.argoproj.io \
-          applicationsets.argoproj.io \
-          appprojects.argoproj.io \
-          --ignore-not-found=true --timeout=60s || true
-      - echo "Deleting cert-manager CRDs..."
-      - |
-        kubectl delete crd \
-          certificaterequests.cert-manager.io \
-          certificates.cert-manager.io \
-          challenges.acme.cert-manager.io \
-          clusterissuers.cert-manager.io \
-          issuers.cert-manager.io \
-          orders.acme.cert-manager.io \
-          --ignore-not-found=true --timeout=60s || true
-      - echo "Deleting Karpenter CRDs..."
-      - |
-        kubectl delete crd \
-          ec2nodeclasses.karpenter.k8s.aws \
-          nodeclaims.karpenter.sh \
-          nodepools.karpenter.sh \
-          nodeoverlays.karpenter.sh \
-          --ignore-not-found=true --timeout=60s || true
-      - echo "CRD cleanup complete"
+      - echo "force-finalize complete."
 
   destroy-platform:
     desc: "Destroy terraform/platform"
@@ -200,19 +276,23 @@ tasks:
       - terraform destroy -auto-approve
 
   verify-clean:
-    desc: "Confirm no running resources remain"
+    desc: "Confirm no running resources remain — clusters, NAT, orphaned EBS"
     cmds:
       - echo "=== EKS Clusters ==="
-      - aws eks list-clusters
-          --region {{.REGION}}
-          --profile {{.PROFILE}}
+      - aws eks list-clusters --region {{.REGION}} --profile {{.PROFILE}} --output text
       - echo "=== NAT Gateways ==="
       - |
         aws ec2 describe-nat-gateways \
-          --region {{.REGION}} \
-          --profile {{.PROFILE}} \
+          --region {{.REGION}} --profile {{.PROFILE}} \
           --filter "Name=state,Values=available,pending" \
-          --query 'NatGateways[].NatGatewayId'
+          --query 'NatGateways[].NatGatewayId' --output text
+      - echo "=== Orphaned EBS Volumes (cluster {{.CLUSTER_NAME}}) ==="
+      - |
+        aws ec2 describe-volumes \
+          --region {{.REGION}} --profile {{.PROFILE}} \
+          --filter "Name=tag:ebs.csi.aws.com/cluster-name,Values={{.CLUSTER_NAME}}" \
+                   "Name=status,Values=available,creating" \
+          --query 'Volumes[].VolumeId' --output text
 
 # ─────────────────────────────────────────────────────────────
 # UTILITIES
@@ -226,16 +306,13 @@ tasks:
       - echo "=== Deploy repo commits ==="
       - git -C {{.DEPLOY_REPO}} log --oneline -3
       - echo "=== Running clusters (must be empty before apply) ==="
-      - aws eks list-clusters
-          --region {{.REGION}}
-          --profile {{.PROFILE}}
+      - aws eks list-clusters --region {{.REGION}} --profile {{.PROFILE}} --output text
       - echo "=== NAT Gateways (must be empty before apply) ==="
       - |
         aws ec2 describe-nat-gateways \
-          --region {{.REGION}} \
-          --profile {{.PROFILE}} \
+          --region {{.REGION}} --profile {{.PROFILE}} \
           --filter "Name=state,Values=available,pending" \
-          --query 'NatGateways[].NatGatewayId'
+          --query 'NatGateways[].NatGatewayId' --output text
 
   karpenter-status:
     desc: "Check Karpenter health — pods, nodeclass, nodepool, nodeclaims"

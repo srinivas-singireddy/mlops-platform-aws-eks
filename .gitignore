@@ -18,3 +18,5 @@
 *.pem
 *.key
 credentials.csv
+*.bak
+.Rhistory

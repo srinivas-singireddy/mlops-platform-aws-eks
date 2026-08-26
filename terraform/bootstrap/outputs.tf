@@ -17,3 +17,8 @@ output "region" {
   value = var.region
 
 }
+
+output "tempo_traces_bucket" {
+  value       = aws_s3_bucket.tempo_traces.id
+  description = "S3 bucket for Tempo trace block storage, referenced by the cluster-root IRSA role"
+}

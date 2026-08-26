@@ -53,3 +53,9 @@ variable "cluster_endpoint_public_access_cidrs" {
   default     = ["0.0.0.0/0"]
   description = "CIDRs allowed to reach the Kubernetes API. Lock down for production; open for lab."
 }
+
+variable "tempo_traces_bucket" {
+  type        = string
+  description = "S3 bucket for Tempo trace blocks. Created in the bootstrap root, which uses local state by design — passed as a variable rather than read via remote state so this root stays CI-portable."
+  default     = "mlops-tempo-traces-938822141378"
+}
